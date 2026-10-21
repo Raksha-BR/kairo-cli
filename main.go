@@ -6,16 +6,23 @@ import (
 	"os"
 
 	"github.com/Raksha-BR/kairo-cli/cmd"
+	"github.com/Raksha-BR/kairo-cli/internal/config"
 	"github.com/Raksha-BR/kairo-cli/internal/db"
 )
 
 func main() {
-	// Initialize the database before running any CLI commands
+	// 1. Initialize SQLite Database
 	if err := db.InitDB(); err != nil {
 		fmt.Fprintf(os.Stderr, "Failed to initialize database: %v\n", err)
 		os.Exit(1)
 	}
 
-	// Execute the CLI router
+	// 2. Load Configuration (~/.kairo.yaml)
+	if err := config.LoadConfig(); err != nil {
+		fmt.Fprintf(os.Stderr, "Failed to load config: %v\n", err)
+		os.Exit(1)
+	}
+
+	// 3. Execute CLI Router
 	cmd.Execute()
 }
