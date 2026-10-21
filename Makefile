@@ -1,36 +1,76 @@
 # Makefile for Kairo CLI
 
-.PHONY: build run ls seed ui clean reset-db
+.PHONY: default build ls ui add add-ai done rm seed reset dev help
 
-# Build the binary
+# Default command when you just type 'make'
+default: ui
+
+# Build binary
 build:
-	@echo "🔨 Building Kairo binary..."
 	@go build -o kairo main.go
-	@echo "✅ Build complete!"
 
-# Build and list tasks
-ls: build
-	@./kairo ls
-
-# Build and launch the TUI
+# Run TUI (Rebuilds automatically)
 ui: build
 	@./kairo ui
 
-# Seed the database with sample tasks for testing
+# List tasks (Rebuilds automatically)
+ls: build
+	@./kairo ls
+
+# Add a normal task -> Example: make add TASK="Write unit tests"
+add: build
+	@if [ -z "$(TASK)" ]; then \
+		echo "❌ Please provide a task string. Usage: make add TASK=\"My task description\""; \
+	else \
+		./kairo add "$(TASK)"; \
+	fi
+
+# Add an AI-assisted task -> Example: make add-ai TASK="Refactor auth service"
+add-ai: build
+	@if [ -z "$(TASK)" ]; then \
+		echo "❌ Please provide a task string. Usage: make add-ai TASK=\"My task description\""; \
+	else \
+		./kairo add "$(TASK)" --ai; \
+	fi
+
+# Complete a task by number -> Example: make done N=1
+done: build
+	@if [ -z "$(N)" ]; then \
+		echo "❌ Please provide a task number. Usage: make done N=1"; \
+	else \
+		./kairo done $(N); \
+	fi
+
+# Delete a task by number -> Example: make rm N=1
+rm: build
+	@if [ -z "$(N)" ]; then \
+		echo "❌ Please provide a task number. Usage: make rm N=1"; \
+	else \
+		./kairo rm $(N); \
+	fi
+
+# Seed test tasks
 seed: build
-	@echo "🌱 Seeding demo tasks..."
+	@echo "🌱 Adding test tasks..."
 	@./kairo add "Setup Ollama local LLM wrapper"
 	@./kairo add "Implement prompt parser for AI"
 	@./kairo add "Write unit tests for DB layer"
 	@./kairo ls
 
-# Clean compiled binary
-clean:
-	@echo "🧹 Removing compiled binary..."
-	@rm -f kairo
-
-# Reset local database (Useful when testing clean states)
-reset-db:
-	@echo "⚠️ Removing local database ~/.kairo.db..."
+# Full Dev Workflow: Resets database, seeds demo tasks, and launches UI in 1 step!
+dev: build
+	@echo "⚡ Running complete dev cycle..."
 	@rm -f ~/.kairo.db
-	@echo "✨ Database reset complete."
+	@./kairo add "Configure Cobra CLI flags"
+	@./kairo add "Refactor database models"
+	@./kairo ui
+
+# Clean binary and database
+reset:
+	@rm -f kairo ~/.kairo.db
+	@echo "✨ Cleaned binary and reset local database."
+
+# Run Go unit tests
+test:
+	@echo "🧪 Running unit tests..."
+	@go test -v ./...

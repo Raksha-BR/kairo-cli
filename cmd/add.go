@@ -6,6 +6,7 @@ import (
 	"strings"
 
 	"github.com/spf13/cobra"
+	"github.com/Raksha-BR/kairo-cli/internal/ai"
 	"github.com/Raksha-BR/kairo-cli/internal/db"
 	"github.com/Raksha-BR/kairo-cli/internal/git"
 )
@@ -16,24 +17,38 @@ var addCmd = &cobra.Command{
 	Args:  cobra.MinimumNArgs(1),
 	Run: func(cmd *cobra.Command, args []string) {
 		taskTitle := strings.Join(args, " ")
-		
+		gitCtx := git.GetCurrentContext()
+
 		useAI, _ := cmd.Flags().GetBool("ai")
 		if useAI {
-			fmt.Printf("🤖 AI Breakdown triggered for: %q\n", taskTitle)
-			fmt.Println("   (Note: AI connection will be implemented in Phase 5)")
+			fmt.Printf("🤖 Asking AI to decompose: %q...\n", taskTitle)
+			subtasks, err := ai.DecomposeTask(taskTitle)
+			if err != nil {
+				fmt.Printf("⚠️  AI Breakdown failed (%v). Saving as standard task.\n", err)
+				_ = db.InsertTask(taskTitle, gitCtx.RepoPath, gitCtx.BranchName)
+				return
+			}
+
+			err = db.InsertTaskWithSubtasks(taskTitle, gitCtx.RepoPath, gitCtx.BranchName, subtasks)
+			if err != nil {
+				fmt.Printf("❌ Failed to save task with subtasks: %v\n", err)
+				return
+			}
+
+			fmt.Printf("✨ Task decomposed into %d actionable subtasks!\n", len(subtasks))
+			for _, sub := range subtasks {
+				fmt.Printf("   └─ %s\n", sub)
+			}
 			return
 		}
 
-		// Get the current Git context
-		gitCtx := git.GetCurrentContext()
-		
-		// Save to Database with Git context
+		// Save Standard Task
 		err := db.InsertTask(taskTitle, gitCtx.RepoPath, gitCtx.BranchName)
 		if err != nil {
 			fmt.Printf("❌ Failed to save task: %v\n", err)
 			return
 		}
-		
+
 		if gitCtx.BranchName != "" {
 			fmt.Printf("✅ Task added to branch [%s]: %q\n", gitCtx.BranchName, taskTitle)
 		} else {
