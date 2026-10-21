@@ -1,0 +1,17 @@
+# .gitignore
+
+# Binaries
+kairo
+kairo.exe
+*.exe
+
+# OS specific files
+.DS_Store
+
+# IDE and Editor folders
+.vscode/
+.idea/
+
+# Go workspaces
+go.work
+go.work.sum
