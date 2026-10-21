@@ -48,3 +48,16 @@ func GetTasks(repoPath string, branchName string) ([]Task, error) {
 	}
 	return tasks, nil
 }
+// CompleteTask marks a task as DONE by its ID
+func CompleteTask(id string) error {
+	query := `UPDATE tasks SET status = 'DONE' WHERE id = ?`
+	_, err := DB.Exec(query, id)
+	return err
+}
+
+// DeleteTask removes a task from the database by its ID
+func DeleteTask(id string) error {
+	query := `DELETE FROM tasks WHERE id = ?`
+	_, err := DB.Exec(query, id)
+	return err
+}
