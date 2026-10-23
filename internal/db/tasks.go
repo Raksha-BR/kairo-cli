@@ -16,6 +16,7 @@ type Task struct {
 	Priority         string
 	DueDate          sql.NullTime
 	TimeSpentSeconds int
+	ParentID         sql.NullString
 }
 
 type TaskStats struct {
@@ -29,7 +30,7 @@ type TaskStats struct {
 	TotalSpent int
 }
 
-func InsertTask(title string, priority string, dueDate *time.Time, repoPath string, branchName string) error {
+func InsertTask(title string, priority string, dueDate *time.Time, repoPath string, branchName string) (string, error) {
 	id := uuid.New().String()
 	if priority == "" {
 		priority = "MEDIUM"
@@ -46,14 +47,33 @@ func InsertTask(title string, priority string, dueDate *time.Time, repoPath stri
 		_, err = DB.Exec(query, id, title, priority, repoPath, branchName)
 	}
 
+	return id, err
+}
+
+func InsertTaskWithParent(title string, priority string, parentID string, repoPath string, branchName string) error {
+	id := uuid.New().String()
+	if priority == "" {
+		priority = "MEDIUM"
+	}
+	query := `INSERT INTO tasks (id, title, status, priority, parent_id, repo_path, branch_name) VALUES (?, ?, 'TODO', ?, ?, ?, ?)`
+	_, err := DB.Exec(query, id, title, priority, parentID, repoPath, branchName)
 	return err
 }
 
+func InsertSubtasksForParent(parentID string, subtasks []string, priority string, repoPath string, branchName string) error {
+	for _, sub := range subtasks {
+		if err := InsertTaskWithParent(sub, priority, parentID, repoPath, branchName); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
 func GetTasks(repoPath string, branchName string) ([]Task, error) {
-	query := `SELECT id, title, status, priority, due_date, time_spent_seconds FROM tasks WHERE repo_path = ? AND branch_name = ? ORDER BY created_at DESC`
+	query := `SELECT id, title, status, priority, due_date, time_spent_seconds, parent_id FROM tasks WHERE repo_path = ? AND branch_name = ? ORDER BY created_at DESC`
 
 	if repoPath == "" {
-		query = `SELECT id, title, status, priority, due_date, time_spent_seconds FROM tasks WHERE repo_path = '' OR repo_path IS NULL ORDER BY created_at DESC`
+		query = `SELECT id, title, status, priority, due_date, time_spent_seconds, parent_id FROM tasks WHERE repo_path = '' OR repo_path IS NULL ORDER BY created_at DESC`
 	}
 
 	rows, err := DB.Query(query, repoPath, branchName)
@@ -65,7 +85,7 @@ func GetTasks(repoPath string, branchName string) ([]Task, error) {
 	var tasks []Task
 	for rows.Next() {
 		var t Task
-		if err := rows.Scan(&t.ID, &t.Title, &t.Status, &t.Priority, &t.DueDate, &t.TimeSpentSeconds); err != nil {
+		if err := rows.Scan(&t.ID, &t.Title, &t.Status, &t.Priority, &t.DueDate, &t.TimeSpentSeconds, &t.ParentID); err != nil {
 			return nil, err
 		}
 		tasks = append(tasks, t)
@@ -123,15 +143,6 @@ func UpdateTimeSpent(id string, additionalSeconds int) error {
 	return err
 }
 
-func InsertSubtasksForParent(subtasks []string, priority string, repoPath string, branchName string) error {
-	for _, sub := range subtasks {
-		if err := InsertTask("└─ "+sub, priority, nil, repoPath, branchName); err != nil {
-			return err
-		}
-	}
-	return nil
-}
-
 func CompleteTask(id string) error {
 	query := `UPDATE tasks SET status = 'DONE' WHERE id = ?`
 	_, err := DB.Exec(query, id)
@@ -139,12 +150,12 @@ func CompleteTask(id string) error {
 }
 
 func DeleteTask(id string) error {
-	query := `DELETE FROM tasks WHERE id = ?`
-	_, err := DB.Exec(query, id)
+	// Delete task and any subtasks linked to it
+	query := `DELETE FROM tasks WHERE id = ? OR parent_id = ?`
+	_, err := DB.Exec(query, id, id)
 	return err
 }
 
-// Batch Operations for Multi-Selected Tasks
 func BatchCompleteTasks(ids []string) error {
 	if len(ids) == 0 {
 		return nil
@@ -170,7 +181,7 @@ func BatchDeleteTasks(ids []string) error {
 		placeholders[i] = "?"
 		args[i] = id
 	}
-	query := `DELETE FROM tasks WHERE id IN (` + strings.Join(placeholders, ",") + `)`
+	query := `DELETE FROM tasks WHERE id IN (` + strings.Join(placeholders, ",") + `) OR parent_id IN (` + strings.Join(placeholders, ",") + `)`
 	_, err := DB.Exec(query, args...)
 	return err
 }

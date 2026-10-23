@@ -30,26 +30,26 @@ var addCmd = &cobra.Command{
 		dueStr, _ := cmd.Flags().GetString("due")
 		dueDate := parseRelativeDate(dueStr)
 
+		parentID, err := db.InsertTask(taskTitle, priority, dueDate, gitCtx.RepoPath, gitCtx.BranchName)
+		if err != nil {
+			fmt.Printf("❌ Failed to save task: %v\n", err)
+			return
+		}
+
 		useAI, _ := cmd.Flags().GetBool("ai")
 		if useAI {
 			fmt.Printf("🤖 Asking AI to decompose: %q...\n", taskTitle)
 			subtasks, err := ai.DecomposeTask(taskTitle)
 			if err != nil {
-				fmt.Printf("⚠️  AI Breakdown failed (%v). Saving as standard task.\n", err)
-				_ = db.InsertTask(taskTitle, priority, dueDate, gitCtx.RepoPath, gitCtx.BranchName)
+				fmt.Printf("⚠️  AI Breakdown failed (%v). Saved standard task.\n", err)
 				return
 			}
 
+			_ = db.InsertSubtasksForParent(parentID, subtasks, priority, gitCtx.RepoPath, gitCtx.BranchName)
+			fmt.Printf("✨ Task decomposed into %d subtasks under parent ID [%s]!\n", len(subtasks), parentID[:8])
 			for _, sub := range subtasks {
-				_ = db.InsertTask("└─ "+sub, priority, dueDate, gitCtx.RepoPath, gitCtx.BranchName)
+				fmt.Printf("   └─ %s\n", sub)
 			}
-			fmt.Printf("✨ Task decomposed into %d actionable subtasks!\n", len(subtasks))
-			return
-		}
-
-		err := db.InsertTask(taskTitle, priority, dueDate, gitCtx.RepoPath, gitCtx.BranchName)
-		if err != nil {
-			fmt.Printf("❌ Failed to save task: %v\n", err)
 			return
 		}
 
@@ -66,7 +66,6 @@ var addCmd = &cobra.Command{
 	},
 }
 
-// Parse relative strings: 'today', 'tomorrow', '3d', '1w'
 func parseRelativeDate(input string) *time.Time {
 	if input == "" {
 		return nil
