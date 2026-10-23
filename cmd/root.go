@@ -10,20 +10,21 @@ import (
 
 var rootCmd = &cobra.Command{
 	Use:   "kairo",
-	Short: "Kairo is a context-aware terminal task engine",
-	Long: `Kairo (Kairos - the opportune moment) is a blazingly fast, 
-context-aware, and AI-powered terminal task engine for developers.
-It automatically tracks your Git branches and uses AI to break down complex tasks.`,
+	Short: "Kairo — Context-Aware Terminal Task & AI Decomposition Engine",
+	Long:  `Kairo is a fast, offline-first terminal task manager built with Go, Cobra, SQLite, Lipgloss, and Bubbletea.`,
+	Run: func(cmd *cobra.Command, args []string) {
+		// Default behavior when running `./kairo` without subcommand is launching TUI
+		_ = uiCmd.RunE(cmd, args)
+	},
 }
 
 func Execute() {
-	err := rootCmd.Execute()
-	if err != nil {
-		fmt.Fprintf(os.Stderr, "Error: %v\n", err)
+	if err := rootCmd.Execute(); err != nil {
+		fmt.Println(err)
 		os.Exit(1)
 	}
 }
 
 func init() {
-	rootCmd.PersistentFlags().String("config", "", "config file (default is $HOME/.kairo.yaml)")
+	rootCmd.CompletionOptions.DisableDefaultCmd = false
 }

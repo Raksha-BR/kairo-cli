@@ -12,32 +12,29 @@ import (
 
 var DB *sql.DB
 
-// InitDB initializes the SQLite database connection and creates tables
 func InitDB() error {
-	// 1. Find the user's home directory to store the database
 	homeDir, err := os.UserHomeDir()
 	if err != nil {
 		return fmt.Errorf("could not find home directory: %v", err)
 	}
 
-	// 2. Define the path to the SQLite file
 	dbPath := filepath.Join(homeDir, ".kairo.db")
 
-	// 3. Open the connection
 	database, err := sql.Open("sqlite3", dbPath)
 	if err != nil {
 		return fmt.Errorf("could not open database: %v", err)
 	}
 
-	// 4. Test the connection
 	if err := database.Ping(); err != nil {
 		return fmt.Errorf("could not ping database: %v", err)
 	}
 
 	DB = database
+	if err := createTables(); err != nil {
+		return err
+	}
 
-	// 5. Create the schema (based on our PRD)
-	return createTables()
+	return migrateSchema()
 }
 
 func createTables() error {
@@ -46,6 +43,9 @@ func createTables() error {
 		id TEXT PRIMARY KEY,
 		title TEXT NOT NULL,
 		status TEXT DEFAULT 'TODO',
+		priority TEXT DEFAULT 'MEDIUM',
+		due_date DATETIME,
+		time_spent_seconds INTEGER DEFAULT 0,
 		repo_path TEXT,
 		branch_name TEXT,
 		parent_id TEXT,
@@ -54,4 +54,17 @@ func createTables() error {
 
 	_, err := DB.Exec(query)
 	return err
+}
+
+func migrateSchema() error {
+	migrations := []string{
+		"ALTER TABLE tasks ADD COLUMN priority TEXT DEFAULT 'MEDIUM';",
+		"ALTER TABLE tasks ADD COLUMN due_date DATETIME;",
+		"ALTER TABLE tasks ADD COLUMN time_spent_seconds INTEGER DEFAULT 0;",
+	}
+
+	for _, m := range migrations {
+		_, _ = DB.Exec(m)
+	}
+	return nil
 }

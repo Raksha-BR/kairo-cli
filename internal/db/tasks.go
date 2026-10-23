@@ -2,34 +2,58 @@
 package db
 
 import (
+	"database/sql"
+	"strings"
+	"time"
+
 	"github.com/google/uuid"
 )
 
-// Task represents a row in the tasks table
 type Task struct {
-	ID     string
-	Title  string
-	Status string
+	ID               string
+	Title            string
+	Status           string
+	Priority         string
+	DueDate          sql.NullTime
+	TimeSpentSeconds int
 }
 
-// internal/db/tasks.go (Update these two functions)
+type TaskStats struct {
+	Total      int
+	Done       int
+	Todo       int
+	HighPrio   int
+	MedPrio    int
+	LowPrio    int
+	Overdue    int
+	TotalSpent int
+}
 
-// InsertTask saves a new task, now including Git context
-func InsertTask(title string, repoPath string, branchName string) error {
+func InsertTask(title string, priority string, dueDate *time.Time, repoPath string, branchName string) error {
 	id := uuid.New().String()
-	query := `INSERT INTO tasks (id, title, status, repo_path, branch_name) VALUES (?, ?, 'TODO', ?, ?)`
-	
-	_, err := DB.Exec(query, id, title, repoPath, branchName)
+	if priority == "" {
+		priority = "MEDIUM"
+	}
+
+	var query string
+	var err error
+
+	if dueDate != nil {
+		query = `INSERT INTO tasks (id, title, status, priority, due_date, repo_path, branch_name) VALUES (?, ?, 'TODO', ?, ?, ?, ?)`
+		_, err = DB.Exec(query, id, title, priority, *dueDate, repoPath, branchName)
+	} else {
+		query = `INSERT INTO tasks (id, title, status, priority, repo_path, branch_name) VALUES (?, ?, 'TODO', ?, ?, ?)`
+		_, err = DB.Exec(query, id, title, priority, repoPath, branchName)
+	}
+
 	return err
 }
 
-// GetTasks retrieves tasks filtered by the current Git context
 func GetTasks(repoPath string, branchName string) ([]Task, error) {
-	query := `SELECT id, title, status FROM tasks WHERE repo_path = ? AND branch_name = ?`
-	
-	// If not in a git repo, fetch global tasks where repo_path is empty
+	query := `SELECT id, title, status, priority, due_date, time_spent_seconds FROM tasks WHERE repo_path = ? AND branch_name = ? ORDER BY created_at DESC`
+
 	if repoPath == "" {
-		query = `SELECT id, title, status FROM tasks WHERE repo_path = '' OR repo_path IS NULL`
+		query = `SELECT id, title, status, priority, due_date, time_spent_seconds FROM tasks WHERE repo_path = '' OR repo_path IS NULL ORDER BY created_at DESC`
 	}
 
 	rows, err := DB.Query(query, repoPath, branchName)
@@ -41,53 +65,141 @@ func GetTasks(repoPath string, branchName string) ([]Task, error) {
 	var tasks []Task
 	for rows.Next() {
 		var t Task
-		if err := rows.Scan(&t.ID, &t.Title, &t.Status); err != nil {
+		if err := rows.Scan(&t.ID, &t.Title, &t.Status, &t.Priority, &t.DueDate, &t.TimeSpentSeconds); err != nil {
 			return nil, err
 		}
 		tasks = append(tasks, t)
 	}
 	return tasks, nil
 }
-// CompleteTask marks a task as DONE by its ID
+
+func GetStats(repoPath string, branchName string) (TaskStats, error) {
+	tasks, err := GetTasks(repoPath, branchName)
+	if err != nil {
+		return TaskStats{}, err
+	}
+
+	now := time.Now()
+	stats := TaskStats{Total: len(tasks)}
+
+	for _, t := range tasks {
+		stats.TotalSpent += t.TimeSpentSeconds
+		if t.Status == "DONE" {
+			stats.Done++
+		} else {
+			stats.Todo++
+			if t.DueDate.Valid && t.DueDate.Time.Before(now) {
+				stats.Overdue++
+			}
+		}
+
+		switch t.Priority {
+		case "HIGH":
+			stats.HighPrio++
+		case "LOW":
+			stats.LowPrio++
+		default:
+			stats.MedPrio++
+		}
+	}
+	return stats, nil
+}
+
+func UpdateTaskTitle(id string, newTitle string) error {
+	query := `UPDATE tasks SET title = ? WHERE id = ?`
+	_, err := DB.Exec(query, newTitle, id)
+	return err
+}
+
+func UpdateTaskPriority(id string, newPriority string) error {
+	query := `UPDATE tasks SET priority = ? WHERE id = ?`
+	_, err := DB.Exec(query, newPriority, id)
+	return err
+}
+
+func UpdateTimeSpent(id string, additionalSeconds int) error {
+	query := `UPDATE tasks SET time_spent_seconds = time_spent_seconds + ? WHERE id = ?`
+	_, err := DB.Exec(query, additionalSeconds, id)
+	return err
+}
+
+func InsertSubtasksForParent(subtasks []string, priority string, repoPath string, branchName string) error {
+	for _, sub := range subtasks {
+		if err := InsertTask("└─ "+sub, priority, nil, repoPath, branchName); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
 func CompleteTask(id string) error {
 	query := `UPDATE tasks SET status = 'DONE' WHERE id = ?`
 	_, err := DB.Exec(query, id)
 	return err
 }
 
-// DeleteTask removes a task from the database by its ID
 func DeleteTask(id string) error {
 	query := `DELETE FROM tasks WHERE id = ?`
 	_, err := DB.Exec(query, id)
 	return err
 }
 
-// InsertTaskWithSubtasks saves a parent task and a list of AI generated subtasks
-func InsertTaskWithSubtasks(parentTitle string, repoPath string, branchName string, subtasks []string) error {
-	parentID := uuid.New().String()
+// Batch Operations for Multi-Selected Tasks
+func BatchCompleteTasks(ids []string) error {
+	if len(ids) == 0 {
+		return nil
+	}
+	placeholders := make([]string, len(ids))
+	args := make([]interface{}, len(ids))
+	for i, id := range ids {
+		placeholders[i] = "?"
+		args[i] = id
+	}
+	query := `UPDATE tasks SET status = 'DONE' WHERE id IN (` + strings.Join(placeholders, ",") + `)`
+	_, err := DB.Exec(query, args...)
+	return err
+}
 
-	tx, err := DB.Begin()
+func BatchDeleteTasks(ids []string) error {
+	if len(ids) == 0 {
+		return nil
+	}
+	placeholders := make([]string, len(ids))
+	args := make([]interface{}, len(ids))
+	for i, id := range ids {
+		placeholders[i] = "?"
+		args[i] = id
+	}
+	query := `DELETE FROM tasks WHERE id IN (` + strings.Join(placeholders, ",") + `)`
+	_, err := DB.Exec(query, args...)
+	return err
+}
+
+func BatchUpdatePriority(ids []string, priority string) error {
+	if len(ids) == 0 {
+		return nil
+	}
+	placeholders := make([]string, len(ids))
+	args := make([]interface{}, len(ids)+1)
+	args[0] = priority
+	for i, id := range ids {
+		placeholders[i] = "?"
+		args[i+1] = id
+	}
+	query := `UPDATE tasks SET priority = ? WHERE id IN (` + strings.Join(placeholders, ",") + `)`
+	_, err := DB.Exec(query, args...)
+	return err
+}
+
+func PurgeDoneTasks(repoPath string, branchName string) (int64, error) {
+	query := `DELETE FROM tasks WHERE status = 'DONE' AND repo_path = ? AND branch_name = ?`
+	if repoPath == "" {
+		query = `DELETE FROM tasks WHERE status = 'DONE' AND (repo_path = '' OR repo_path IS NULL)`
+	}
+
+	res, err := DB.Exec(query, repoPath, branchName)
 	if err != nil {
-		return err
+		return 0, err
 	}
-	defer tx.Rollback()
-
-	// Insert Parent Task
-	parentQuery := `INSERT INTO tasks (id, title, status, repo_path, branch_name) VALUES (?, ?, 'TODO', ?, ?)`
-	_, err = tx.Exec(parentQuery, parentID, parentTitle, repoPath, branchName)
-	if err != nil {
-		return err
-	}
-
-	// Insert Subtasks linked by parent_id
-	subQuery := `INSERT INTO tasks (id, title, status, repo_path, branch_name, parent_id) VALUES (?, ?, 'TODO', ?, ?, ?)`
-	for _, sub := range subtasks {
-		subID := uuid.New().String()
-		_, err = tx.Exec(subQuery, subID, "└─ "+sub, repoPath, branchName, parentID)
-		if err != nil {
-			return err
-		}
-	}
-
-	return tx.Commit()
+	return res.RowsAffected()
 }

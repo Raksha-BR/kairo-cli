@@ -3,20 +3,36 @@ package ui
 
 import (
 	"fmt"
+	"sort"
+	"strings"
+	"time"
 
+	"github.com/charmbracelet/bubbles/textinput"
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
+	"github.com/Raksha-BR/kairo-cli/internal/ai"
 	"github.com/Raksha-BR/kairo-cli/internal/db"
 	"github.com/Raksha-BR/kairo-cli/internal/git"
 )
 
-// Styles using Lipgloss
+type tickMsg time.Time
+
+func doTick() tea.Cmd {
+	return tea.Tick(time.Second, func(t time.Time) tea.Msg {
+		return tickMsg(t)
+	})
+}
+
 var (
 	titleStyle = lipgloss.NewStyle().
 			Bold(true).
 			Foreground(lipgloss.Color("#7D56F4")).
 			PaddingLeft(1).
 			PaddingRight(1)
+
+	progressStyle = lipgloss.NewStyle().
+			Foreground(lipgloss.Color("#04B575")).
+			Bold(true)
 
 	selectedItemStyle = lipgloss.NewStyle().
 				Foreground(lipgloss.Color("#04B575")).
@@ -32,23 +48,111 @@ var (
 	statusHeaderStyle = lipgloss.NewStyle().
 				Foreground(lipgloss.Color("#EE6FF8")).
 				Italic(true)
+
+	tabStyle = lipgloss.NewStyle().
+			Foreground(lipgloss.Color("#8BE9FD")).
+			Bold(true)
+
+	multiSelectStyle = lipgloss.NewStyle().
+				Foreground(lipgloss.Color("#FF79C6")).
+				Bold(true)
+
+	timerActiveStyle = lipgloss.NewStyle().
+				Bold(true).
+				Foreground(lipgloss.Color("#50FA7B")).
+				Background(lipgloss.Color("#282A36")).
+				Padding(0, 1)
+
+	aiStatusStyle = lipgloss.NewStyle().
+			Foreground(lipgloss.Color("#FF79C6")).
+			Bold(true)
+
+	overdueBadgeStyle = lipgloss.NewStyle().
+				Bold(true).
+				Foreground(lipgloss.Color("#FF5555")).
+				SetString("[OVERDUE]")
+
+	dueTodayBadgeStyle = lipgloss.NewStyle().
+				Bold(true).
+				Foreground(lipgloss.Color("#FFB86C")).
+				SetString("[DUE TODAY]")
+
+	dueBadgeStyle = lipgloss.NewStyle().
+			Foreground(lipgloss.Color("#BD93F9"))
+
+	helpBoxStyle = lipgloss.NewStyle().
+			Border(lipgloss.RoundedBorder()).
+			BorderForeground(lipgloss.Color("#7D56F4")).
+			Padding(1, 2).
+			Width(68)
+
+	highPriorityStyle = lipgloss.NewStyle().
+				Bold(true).
+				Foreground(lipgloss.Color("#FF5555")).
+				SetString("[HIGH]")
+
+	medPriorityStyle = lipgloss.NewStyle().
+				Foreground(lipgloss.Color("#FFB86C")).
+				SetString("[MED]")
+
+	lowPriorityStyle = lipgloss.NewStyle().
+				Foreground(lipgloss.Color("#8BE9FD")).
+				SetString("[LOW]")
 )
 
 type model struct {
-	tasks    []db.Task
-	cursor   int
-	gitCtx   git.Context
-	err      error
+	allTasks      []db.Task
+	tasks         []db.Task
+	selectedIDs   map[string]bool // Track multi-selected task IDs
+	cursor        int
+	gitCtx        git.Context
+	err           error
+	adding        bool
+	editing       bool
+	searching     bool
+	showHelp      bool
+	aiLoading     bool
+	timerActive   bool
+	activeTimerID string
+	timerSeconds  int
+	aiMessage     string
+	editTaskID    string
+	filterStatus  string
+	sortBy        string
+	textInput     textinput.Model
+	searchInput   textinput.Model
 }
 
 func InitialModel() model {
 	gitCtx := git.GetCurrentContext()
-	tasks, err := db.GetTasks(gitCtx.RepoPath, gitCtx.BranchName)
+	tasks, _ := db.GetTasks(gitCtx.RepoPath, gitCtx.BranchName)
+
+	ti := textinput.New()
+	ti.Placeholder = "Type task description..."
+	ti.CharLimit = 150
+	ti.Width = 45
+
+	si := textinput.New()
+	si.Placeholder = "Search tasks..."
+	si.CharLimit = 50
+	si.Width = 30
+
 	return model{
-		tasks:  tasks,
-		cursor: 0,
-		gitCtx: gitCtx,
-		err:    err,
+		allTasks:     tasks,
+		tasks:        tasks,
+		selectedIDs:  make(map[string]bool),
+		cursor:       0,
+		gitCtx:       gitCtx,
+		textInput:    ti,
+		searchInput:  si,
+		adding:       false,
+		editing:      false,
+		searching:    false,
+		showHelp:     false,
+		aiLoading:    false,
+		timerActive:  false,
+		filterStatus: "ALL",
+		sortBy:       "DEFAULT",
 	}
 }
 
@@ -56,12 +160,287 @@ func (m model) Init() tea.Cmd {
 	return nil
 }
 
+func (m model) getSelectedIDsList() []string {
+	var list []string
+	for id, isSel := range m.selectedIDs {
+		if isSel {
+			list = append(list, id)
+		}
+	}
+	return list
+}
+
+func (m model) filterTasks() []db.Task {
+	query := strings.ToLower(m.searchInput.Value())
+	var res []db.Task
+
+	for _, t := range m.allTasks {
+		if m.filterStatus == "TODO" && t.Status == "DONE" {
+			continue
+		}
+		if m.filterStatus == "DONE" && t.Status != "DONE" {
+			continue
+		}
+
+		if query != "" && !strings.Contains(strings.ToLower(t.Title), query) {
+			continue
+		}
+
+		res = append(res, t)
+	}
+
+	switch m.sortBy {
+	case "PRIORITY":
+		prioOrder := map[string]int{"HIGH": 1, "MEDIUM": 2, "LOW": 3}
+		sort.SliceStable(res, func(i, j int) bool {
+			return prioOrder[res[i].Priority] < prioOrder[res[j].Priority]
+		})
+	case "DUE_DATE":
+		sort.SliceStable(res, func(i, j int) bool {
+			if !res[i].DueDate.Valid {
+				return false
+			}
+			if !res[j].DueDate.Valid {
+				return true
+			}
+			return res[i].DueDate.Time.Before(res[j].DueDate.Time)
+		})
+	}
+
+	return res
+}
+
+func renderProgressBar(doneCount, totalCount int) string {
+	if totalCount == 0 {
+		return ""
+	}
+	percent := (doneCount * 100) / totalCount
+	width := 10
+	filled := (doneCount * width) / totalCount
+	empty := width - filled
+
+	bar := strings.Repeat("█", filled) + strings.Repeat("░", empty)
+	return fmt.Sprintf("[%s] %d%% (%d/%d done)", bar, percent, doneCount, totalCount)
+}
+
+func formatDuration(sec int) string {
+	m := sec / 60
+	s := sec % 60
+	return fmt.Sprintf("%02dm %02ds", m, s)
+}
+
 func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
+	var cmd tea.Cmd
+
+	switch msg.(type) {
+	case tickMsg:
+		if m.timerActive {
+			m.timerSeconds++
+			return m, doTick()
+		}
+	}
+
+	if m.showHelp {
+		switch msg := msg.(type) {
+		case tea.KeyMsg:
+			switch msg.String() {
+			case "?", "esc", "q":
+				m.showHelp = false
+				return m, nil
+			}
+		}
+		return m, nil
+	}
+
+	if m.adding {
+		switch msg := msg.(type) {
+		case tea.KeyMsg:
+			switch msg.String() {
+			case "enter":
+				val := m.textInput.Value()
+				if val != "" {
+					_ = db.InsertTask(val, "HIGH", nil, m.gitCtx.RepoPath, m.gitCtx.BranchName)
+					m.allTasks, _ = db.GetTasks(m.gitCtx.RepoPath, m.gitCtx.BranchName)
+					m.tasks = m.filterTasks()
+					m.textInput.Reset()
+				}
+				m.adding = false
+				return m, nil
+
+			case "esc":
+				m.adding = false
+				m.textInput.Reset()
+				return m, nil
+			}
+		}
+
+		m.textInput, cmd = m.textInput.Update(msg)
+		return m, cmd
+	}
+
+	if m.editing {
+		switch msg := msg.(type) {
+		case tea.KeyMsg:
+			switch msg.String() {
+			case "enter":
+				val := m.textInput.Value()
+				if val != "" && m.editTaskID != "" {
+					_ = db.UpdateTaskTitle(m.editTaskID, val)
+					m.allTasks, _ = db.GetTasks(m.gitCtx.RepoPath, m.gitCtx.BranchName)
+					m.tasks = m.filterTasks()
+					m.textInput.Reset()
+				}
+				m.editing = false
+				m.editTaskID = ""
+				return m, nil
+
+			case "esc":
+				m.editing = false
+				m.editTaskID = ""
+				m.textInput.Reset()
+				return m, nil
+			}
+		}
+
+		m.textInput, cmd = m.textInput.Update(msg)
+		return m, cmd
+	}
+
+	if m.searching {
+		switch msg := msg.(type) {
+		case tea.KeyMsg:
+			switch msg.String() {
+			case "enter", "esc":
+				m.searching = false
+				return m, nil
+			}
+		}
+
+		m.searchInput, cmd = m.searchInput.Update(msg)
+		m.tasks = m.filterTasks()
+		m.cursor = 0
+		return m, cmd
+	}
+
 	switch msg := msg.(type) {
 	case tea.KeyMsg:
 		switch msg.String() {
 		case "ctrl+c", "q":
+			if m.timerActive && m.activeTimerID != "" {
+				_ = db.UpdateTimeSpent(m.activeTimerID, m.timerSeconds)
+			}
 			return m, tea.Quit
+
+		case "x": // Toggle Multi-Select on highlighted task
+			if len(m.tasks) > 0 && m.cursor < len(m.tasks) {
+				tID := m.tasks[m.cursor].ID
+				m.selectedIDs[tID] = !m.selectedIDs[tID]
+			}
+
+		case "f":
+			if len(m.tasks) > 0 && m.cursor < len(m.tasks) {
+				currentTask := m.tasks[m.cursor]
+				if m.timerActive {
+					_ = db.UpdateTimeSpent(m.activeTimerID, m.timerSeconds)
+					m.allTasks, _ = db.GetTasks(m.gitCtx.RepoPath, m.gitCtx.BranchName)
+					m.tasks = m.filterTasks()
+					m.timerActive = false
+					m.aiMessage = fmt.Sprintf("⏱️ Saved %s work time!", formatDuration(m.timerSeconds))
+					m.timerSeconds = 0
+					m.activeTimerID = ""
+				} else {
+					m.timerActive = true
+					m.activeTimerID = currentTask.ID
+					m.timerSeconds = 0
+					m.aiMessage = fmt.Sprintf("⏱️ Focus Timer Started on %q", currentTask.Title)
+					return m, doTick()
+				}
+			}
+
+		case "?":
+			m.showHelp = true
+			return m, nil
+
+		case "s":
+			switch m.sortBy {
+			case "DEFAULT":
+				m.sortBy = "PRIORITY"
+			case "PRIORITY":
+				m.sortBy = "DUE_DATE"
+			default:
+				m.sortBy = "DEFAULT"
+			}
+			m.tasks = m.filterTasks()
+			m.cursor = 0
+
+		case "tab":
+			switch m.filterStatus {
+			case "ALL":
+				m.filterStatus = "TODO"
+			case "TODO":
+				m.filterStatus = "DONE"
+			default:
+				m.filterStatus = "ALL"
+			}
+			m.tasks = m.filterTasks()
+			m.cursor = 0
+
+		case "c":
+			purgedCount, _ := db.PurgeDoneTasks(m.gitCtx.RepoPath, m.gitCtx.BranchName)
+			m.allTasks, _ = db.GetTasks(m.gitCtx.RepoPath, m.gitCtx.BranchName)
+			m.tasks = m.filterTasks()
+			m.cursor = 0
+			m.selectedIDs = make(map[string]bool)
+			if purgedCount > 0 {
+				m.aiMessage = fmt.Sprintf("🧹 Purged %d completed tasks!", purgedCount)
+			} else {
+				m.aiMessage = "ℹ️ No completed tasks to clear."
+			}
+
+		case "p": // Cycle Priority (Handles Single or Multi-Select)
+			selList := m.getSelectedIDsList()
+			if len(selList) > 0 {
+				_ = db.BatchUpdatePriority(selList, "HIGH")
+				m.aiMessage = fmt.Sprintf("⚡ Updated priority to HIGH for %d tasks!", len(selList))
+				m.selectedIDs = make(map[string]bool)
+			} else if len(m.tasks) > 0 && m.cursor < len(m.tasks) {
+				t := m.tasks[m.cursor]
+				nextPrio := "MEDIUM"
+				switch t.Priority {
+				case "LOW":
+					nextPrio = "MEDIUM"
+				case "MEDIUM":
+					nextPrio = "HIGH"
+				case "HIGH":
+					nextPrio = "LOW"
+				}
+				_ = db.UpdateTaskPriority(t.ID, nextPrio)
+			}
+			m.allTasks, _ = db.GetTasks(m.gitCtx.RepoPath, m.gitCtx.BranchName)
+			m.tasks = m.filterTasks()
+
+		case "A":
+			if len(m.tasks) > 0 && m.cursor < len(m.tasks) {
+				selectedTask := m.tasks[m.cursor]
+				m.aiLoading = true
+				m.aiMessage = fmt.Sprintf("🤖 AI decomposing %q...", selectedTask.Title)
+
+				subtasks, err := ai.DecomposeTask(selectedTask.Title)
+				if err != nil {
+					m.aiMessage = fmt.Sprintf("⚠️ AI failed: %v", err)
+				} else {
+					_ = db.InsertSubtasksForParent(subtasks, selectedTask.Priority, m.gitCtx.RepoPath, m.gitCtx.BranchName)
+					m.allTasks, _ = db.GetTasks(m.gitCtx.RepoPath, m.gitCtx.BranchName)
+					m.tasks = m.filterTasks()
+					m.aiMessage = fmt.Sprintf("✨ Added %d AI subtasks!", len(subtasks))
+				}
+				m.aiLoading = false
+			}
+
+		case "/":
+			m.searching = true
+			m.searchInput.Focus()
+			return m, textinput.Blink
 
 		case "up", "k":
 			if m.cursor > 0 {
@@ -73,17 +452,50 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				m.cursor++
 			}
 
-		case " ": // Spacebar toggles task status
+		case "a":
+			m.adding = true
+			m.textInput.SetValue("")
+			m.textInput.Focus()
+			return m, textinput.Blink
+
+		case "e":
 			if len(m.tasks) > 0 && m.cursor < len(m.tasks) {
+				m.editing = true
+				m.editTaskID = m.tasks[m.cursor].ID
+				m.textInput.SetValue(m.tasks[m.cursor].Title)
+				m.textInput.Focus()
+				return m, textinput.Blink
+			}
+
+		case "d": // Delete Task (Handles Single or Multi-Select)
+			selList := m.getSelectedIDsList()
+			if len(selList) > 0 {
+				_ = db.BatchDeleteTasks(selList)
+				m.aiMessage = fmt.Sprintf("🗑️ Bulk deleted %d tasks!", len(selList))
+				m.selectedIDs = make(map[string]bool)
+			} else if len(m.tasks) > 0 && m.cursor < len(m.tasks) {
+				_ = db.DeleteTask(m.tasks[m.cursor].ID)
+			}
+			m.allTasks, _ = db.GetTasks(m.gitCtx.RepoPath, m.gitCtx.BranchName)
+			m.tasks = m.filterTasks()
+			if m.cursor >= len(m.tasks) && m.cursor > 0 {
+				m.cursor--
+			}
+
+		case " ": // Complete Task (Handles Single or Multi-Select)
+			selList := m.getSelectedIDsList()
+			if len(selList) > 0 {
+				_ = db.BatchCompleteTasks(selList)
+				m.aiMessage = fmt.Sprintf("✅ Bulk completed %d tasks!", len(selList))
+				m.selectedIDs = make(map[string]bool)
+			} else if len(m.tasks) > 0 && m.cursor < len(m.tasks) {
 				t := m.tasks[m.cursor]
-				if t.Status == "DONE" {
-					// Toggle back to TODO (optional future improvement)
-				} else {
+				if t.Status != "DONE" {
 					_ = db.CompleteTask(t.ID)
-					// Refresh task list in state
-					m.tasks, _ = db.GetTasks(m.gitCtx.RepoPath, m.gitCtx.BranchName)
 				}
 			}
+			m.allTasks, _ = db.GetTasks(m.gitCtx.RepoPath, m.gitCtx.BranchName)
+			m.tasks = m.filterTasks()
 		}
 	}
 
@@ -91,31 +503,99 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 }
 
 func (m model) View() string {
-	if m.err != nil {
-		return fmt.Sprintf("Error: %v\n", m.err)
-	}
-
 	s := "\n"
-	
-	// Title / Context Bar
+
+	doneCount := 0
+	for _, t := range m.allTasks {
+		if t.Status == "DONE" {
+			doneCount++
+		}
+	}
+	pBar := renderProgressBar(doneCount, len(m.allTasks))
+
 	if m.gitCtx.BranchName != "" {
-		s += titleStyle.Render(fmt.Sprintf("⏳ Kairo Workspace [%s]", m.gitCtx.BranchName)) + "\n\n"
+		s += titleStyle.Render(fmt.Sprintf("⏳ Kairo Workspace [%s]", m.gitCtx.BranchName)) + " " + progressStyle.Render(pBar)
 	} else {
-		s += titleStyle.Render("⏳ Kairo Global Workspace") + "\n\n"
+		s += titleStyle.Render("⏳ Kairo Global Workspace") + " " + progressStyle.Render(pBar)
 	}
 
-	if len(m.tasks) == 0 {
-		s += statusHeaderStyle.Render("🎉 No active tasks in this workspace! Press 'q' to exit.") + "\n\n"
+	if m.timerActive {
+		s += " " + timerActiveStyle.Render(fmt.Sprintf("⏱️ RUNNING: %s", formatDuration(m.timerSeconds)))
+	}
+	s += "\n\n"
+
+	if m.showHelp {
+		modalContent := "⌨️  Kairo Keyboard Reference\n" +
+			"----------------------------------------\n" +
+			" j / k or ↑/↓ : Navigate items\n" +
+			" Space        : Toggle task DONE (or Bulk Complete)\n" +
+			" x            : Toggle Multi-Select item ([•])\n" +
+			" f            : Toggle Focus Timer (Stopwatch)\n" +
+			" p            : Cycle Priority (or Bulk HIGH)\n" +
+			" s            : Cycle Sort (Default/Priority/Due Date)\n" +
+			" a            : Add new task inline\n" +
+			" e            : Edit highlighted task title\n" +
+			" d            : Delete highlighted task (or Bulk Delete)\n" +
+			" c            : Clear/Purge all completed tasks\n" +
+			" Shift+A      : AI Decompose highlighted task\n" +
+			" Tab          : Switch filter tab (ALL/TODO/DONE)\n" +
+			" /            : Search/Filter tasks in real-time\n" +
+			" ?            : Toggle this Help Menu\n" +
+			" q            : Quit dashboard\n\n" +
+			"(Press '?' or Esc to close)"
+		return s + helpBoxStyle.Render(modalContent) + "\n"
+	}
+
+	s += tabStyle.Render(fmt.Sprintf(" View Tab: [%s] | Sort: [%s]", m.filterStatus, m.sortBy))
+
+	selCount := len(m.getSelectedIDsList())
+	if selCount > 0 {
+		s += "  " + multiSelectStyle.Render(fmt.Sprintf("[• %d SELECTED]", selCount))
+	}
+
+	if m.aiMessage != "" {
+		s += "  " + aiStatusStyle.Render(m.aiMessage)
+	}
+	s += "\n\n"
+
+	if m.adding {
+		s += "➕ Add New Task:\n\n"
+		s += m.textInput.View() + "\n\n"
+		s += "(Press Enter to save, Esc to cancel)\n"
 		return s
 	}
 
-	s += statusHeaderStyle.Render("Use j/k or ↑/↓ to navigate • Space to mark DONE • q to quit") + "\n\n"
+	if m.editing {
+		s += "✏️ Edit Selected Task:\n\n"
+		s += m.textInput.View() + "\n\n"
+		s += "(Press Enter to save changes, Esc to cancel)\n"
+		return s
+	}
 
-	// Render task list
+	if m.searching {
+		s += "🔍 Search: " + m.searchInput.View() + " (Press Enter or Esc when done)\n\n"
+	} else if m.searchInput.Value() != "" {
+		s += fmt.Sprintf("🔍 Search Query: %q\n\n", m.searchInput.Value())
+	}
+
+	if len(m.tasks) == 0 {
+		s += statusHeaderStyle.Render("🎉 No matching tasks! Press 'a' to add, 'Tab' to switch view, '?' for help, 'q' to quit.") + "\n\n"
+		return s
+	}
+
+	s += statusHeaderStyle.Render("j/k: Nav • Space: Done • x: Select • f: Timer • p: Prio • s: Sort • a: Add • e: Edit • c: Clear • Shift+A: AI • ?: Help • q: Quit") + "\n\n"
+
+	now := time.Now()
+
 	for i, task := range m.tasks {
 		cursor := " "
 		if m.cursor == i {
 			cursor = "❯"
+		}
+
+		selectTag := " "
+		if m.selectedIDs[task.ID] {
+			selectTag = "•"
 		}
 
 		checkbox := "[ ]"
@@ -123,7 +603,34 @@ func (m model) View() string {
 			checkbox = "[x]"
 		}
 
-		line := fmt.Sprintf("%s %s %s", cursor, checkbox, task.Title)
+		var prioBadge string
+		switch task.Priority {
+		case "HIGH":
+			prioBadge = highPriorityStyle.Render()
+		case "LOW":
+			prioBadge = lowPriorityStyle.Render()
+		default:
+			prioBadge = medPriorityStyle.Render()
+		}
+
+		dueLabel := ""
+		if task.DueDate.Valid && task.Status != "DONE" {
+			dTime := task.DueDate.Time
+			if dTime.Before(now) {
+				dueLabel = overdueBadgeStyle.Render() + " "
+			} else if dTime.Year() == now.Year() && dTime.YearDay() == now.YearDay() {
+				dueLabel = dueTodayBadgeStyle.Render() + " "
+			} else {
+				dueLabel = dueBadgeStyle.Render(fmt.Sprintf("[%s]", dTime.Format("Jan 02"))) + " "
+			}
+		}
+
+		timeLabel := ""
+		if task.TimeSpentSeconds > 0 {
+			timeLabel = fmt.Sprintf(" ⏱️ %s", formatDuration(task.TimeSpentSeconds))
+		}
+
+		line := fmt.Sprintf("%s %s%s %s %s%s%s", cursor, selectTag, checkbox, prioBadge, dueLabel, task.Title, timeLabel)
 
 		if task.Status == "DONE" {
 			line = doneItemStyle.Render(line)
