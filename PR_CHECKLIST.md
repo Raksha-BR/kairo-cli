@@ -1,5 +1,7 @@
-### 📋 Workspace Tasks (`main`)
+## 📋 PR Checklist & Task Breakdown
 
-- [ ] **[HIGH]** Fix critical memory leak
-- [ ] **[LOW]** Update README documentation
-- [ ] **[MEDIUM]** Write unit tests for UI layer
+> **Workspace Context:** `/home/rakshabr/projects/kairo-cli` (Branch: `main`)
+
+- [ ] **[MEDIUM]** Prepare sprint roadmap
+- [ ] **[LOW]** Benchmark SQLite query latency
+- [ ] **[HIGH]** Submit pull request review
