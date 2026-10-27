@@ -6,13 +6,16 @@
 
 ## 🌟 Key Features
 
-- 🌲 **Git Branch Context Awareness**: Tasks are automatically bound to your active Git repository path and branch name. Switching branches dynamically filters your task list!
-- 🎨 **Interactive TUI Dashboard (`kairo ui` / `make ui`)**: Full-screen terminal dashboard with Vim navigation (`j`/`k`), priority badges, real-time search, sorting, inline editing, and status filter tabs.
-- 🤖 **Local AI Task Decomposition (`--ai` / `Shift+A`)**: Automatically breaks down complex software tasks into actionable subtasks using local Ollama models (`llama3.2`) with zero external API latency.
-- 📊 **Workspace Metrics & Analytics (`kairo stats`)**: Displays visual progress meters, completion percentages, and priority breakdowns.
-- 📋 **PR Checklist Markdown Exporter (`kairo export`)**: Export active workspace checklists straight into Markdown for PR descriptions or GitHub issues.
-- ⚙️ **Configurable YAML Engine (`~/.kairo.yaml`)**: Manage models, endpoints, and providers via Viper.
-- 🚀 **Single-Command Developer Workflow (`Makefile`)**: Fast target macros (`make dev`, `make demo`, `make ui`, `make stats`, `make reset`).
+- 🌲 **Git Context Awareness**: Tasks are automatically bound to your active Git repository path and branch name. Switching branches dynamically filters your workspace!
+- 🎨 **Interactive TUI Dashboard (`kairo ui` / `make ui`)**: Full-screen terminal dashboard with Vim navigation (`j`/`k`), priority badges, real-time search, sorting, and filter tabs.
+- 🌳 **Collapsible AI Sub-task Tree View (`o` key)**: Expand or collapse nested AI subtasks (`▼ [3 subtasks]` / `▶ [3 subtasks]`) tied via SQLite relational `parent_id` mapping.
+- ⏱️ **Focus Stopwatch Timer (`f` key)**: Track focus time per task directly inside the TUI with live status bar ticking and persistent database logging.
+- 🎯 **Batch Multi-Selection & Bulk Operations (`x` key)**: Select multiple tasks (`[•]`) to perform bulk completion (`Space`), bulk priority upgrades (`p`), or bulk deletion (`d`).
+- 🤖 **Async Local AI Task Decomposition (`--ai` / `Shift+A`)**: Non-blocking background goroutines parse complex tasks into subtasks using local Ollama (`llama3.2`) models without freezing the UI.
+- 📅 **Relative Due Dates (`--due`)**: Parse relative inputs (`today`, `tomorrow`, `3d`, `1w`) with real-time `[OVERDUE]` and `[DUE TODAY]` badge alerts.
+- 📋 **PR Checklist Exporter (`kairo export`)**: Export active workspace tasks directly into formatted Markdown checklists for GitHub PR descriptions.
+- 📊 **Workspace Metrics & Analytics (`kairo stats`)**: Visual progress meters, completion percentages, and priority distribution.
+- ⚙️ **Config & Shell Auto-Completion**: Config viewer (`kairo config`) and shell tab completion (`kairo completion bash/zsh`).
 
 ---
 
@@ -33,85 +36,6 @@ flowchart TD
     end
 
     subgraph AI Intelligence
-        TUI --> AI[Ollama Local LLM Wrapper\nStructured Subtask Breakdown]
+        TUI --> AI[Ollama Local LLM Wrapper\nAsync Non-Blocking Subtask Breakdown]
         CLI --> AI
     end
-```
-
----
-
-## 💻 Keybindings Reference (TUI Dashboard)
-
-| Keybinding | Action |
-| :--- | :--- |
-| `j` / `k` or `↑` / `↓` | Navigate task list |
-| `Space` | Toggle task completion (`[x]` DONE) |
-| `p` | Cycle Task Priority (`LOW` ➔ `MED` ➔ `HIGH`) |
-| `s` | Cycle Task Sort (`Default` ➔ `Priority` ➔ `Due Date`) |
-| `a` | Add new task inline |
-| `e` | Edit highlighted task title |
-| `d` | Delete highlighted task |
-| `c` | Clear/Purge all completed tasks |
-| `Shift+A` | Run AI Decomposition on highlighted task |
-| `Tab` | Switch View Tab (`ALL` ➔ `TODO` ➔ `DONE`) |
-| `/` | Live search / filter tasks |
-| `?` | Toggle Keybinding Help Modal |
-| `q` | Quit dashboard |
-
----
-
-## 🛠 Single-Command Developer Workflow (`Makefile`)
-
-```bash
-# Launch interactive TUI
-make ui
-
-# Run fresh dev setup (reset DB, seed demo tasks with priorities/due dates, launch TUI)
-make dev
-
-# Display analytics and workspace metrics
-make stats
-
-# Run in-memory SQLite unit test suite
-make test
-
-# Clear compiled binary and local database
-make reset
-🛠 Tech Stack
-Language: Go (Golang 1.22+)
-
-CLI Framework: Cobra & Viper
-
-Terminal UI: Charm Bubbletea, Lipgloss, Bubbles
-
-Database: Embedded SQLite (mattn/go-sqlite3)
-
-Git Integration: Native Git CLI Wrapper
-
-AI Integration: Ollama Local LLM API Wrapper
-
-
----
-
-### Step 3: Test Local Configuration Viewer!
-
-Rebuild and test your new command:
-
-```bash
-make build
-./kairo config
-Output:
-
-⚙️  Kairo System Configuration
---------------------------------------------
- AI Provider:   ollama
- AI Model:      llama3.2
- Ollama URL:    http://localhost:11434
- OpenAI Key:    [NOT SET]
---------------------------------------------
-📍 Active Workspace Context
- Git Repo:      /home/rakshabr/projects/kairo-cli
- Git Branch:    main
- Config File:   ~/.kairo.yaml
- SQLite DB:     ~/.kairo.db
---------------------------------------------
